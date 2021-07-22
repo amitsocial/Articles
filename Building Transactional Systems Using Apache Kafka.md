@@ -47,3 +47,40 @@ There may be cases where the first part of a transaction is processed by the con
 
 ![Kafka_Processor_B-e1566232420283](https://user-images.githubusercontent.com/87693294/126628420-483cd8ec-841c-475c-90d7-8271ab288300.png)
 
+This problem can be tackled in several different ways. One possibility is to require Processor B to reprocess the partition, which would require careful attention to avoid side effects. It is also worth noting that rebalances occur infrequently, whereas events occur frequently. If the partition grows quickly and event processing is slow in comparison, reprocessing the partition may take a long time.
+
+Kafka Streams takes care of the issue in a different way. Each Kafka Streams task contains a state store that is required for functionality involving multiple dependent messages like windowing. The tasks are aware of rebalances and migrate the state accordingly between event processors. Therefore, Processor B knows about the event processed by Processor A.
+
+The most robust way to represent a transaction is to model a transaction as a single event. We previously established that events are atomic. If an event always corresponds to a single transaction, this transaction will also be processed atomically.
+
+## API consistency
+Even though event producers are responsible for maintaining referential integrity and other constraints on the data model, the API itself will only be eventually consistent for clients. The event producers and consumers are asynchronously decoupled through Kafka. If the client creates a new tenant and immediately reads it, chances are that the tenant was not yet created and the request fails. This is a fundamental design decision, but alleviating the issue is possible. There is no need for clients to query the API if it always returns newly created entities in its response. The following image shows a user who creates a new tenant. The event producer awaits the commit and returns the contents of the committed event back to the user.
+![New_Tenant-e1566233091574](https://user-images.githubusercontent.com/87693294/126628691-4a429fd8-51d9-43b5-a370-be422b4a2bc6.png)
+
+
+The returned data may be filtered, of course, in order to prevent internal information from leaking to the user. Paired with a client-side library, this approach can hide the eventually consistent behavior from the client.
+
+## Idempotent event processing
+Many things can go wrong in a distributed system. Requests to the HTTP API could be received twice due to network issues. Furthermore, since event producers, consumers, and Kafka reside on different hosts, a consumer may crash halfway through processing an event. Consequently, it is important to make sure that duplicate requests or events do not modify our system state twice. We need to make the system idempotent. Although this property is very specific to the individual application, we can take measures in two different areas: communication between the user, and the HTTP API or communication between event producer and the event processor.
+
+
+Our example client uses HTTP to communicate with the event producer. HTTP verbs, such as PUT or DELETE, are idempotent by definition, but operations like POST require special treatment. One possibility is to add an additional HTTP header to requests by which the HTTP server can identify whether a request was sent twice. This unique ID can also be part of the request data. Anything goes, as long as the client and the server agree.
+
+If we do not want to impose constraints on the client, we still have ways to make the event producers and consumers idempotent. For example, a producer can derive the tenant key from unique properties of the tenant, such as email address. Duplicate POST requests will then lead to two events with the same keys and values. From there, event processors ensure that only a tenant with a specific key is created, if it does not yet exist.
+
+Adding more services
+The discussed system is just a toy example, but the architecture can be extended to more than a single entity, following the principles of domain-driven design or self-contained systems. Adding producers and consumers for each entity results in a number of “verticals” that are highly decoupled through Kafka.
+![Services-1-e1566232280210](https://user-images.githubusercontent.com/87693294/126628798-db3e3506-b353-4b31-9d89-ae97256c6101.png)
+
+The event producers and processors need not be separate deployment units. In fact, they might just be two asynchronous subroutines within an application. Even a monolithic deployment works.
+
+The example system assumes that duplicate messages will occur and is designed to handle them gracefully. If you cannot have duplicates, you might want to look into Kafka transactions, which provide exactly once delivery semantics. Together with Kafka Streams, they can be used as a building block for connecting a landscape of services with exactly once semantics.
+
+## Final thoughts
+The presented example system supports atomic, isolated, and durable operations for creating, modifying, and deleting single tenants, in which event producers handle consistency. The system can be scaled horizontally by adding additional partitions to the tenant topic as long as all tenant events are written to the same topic.
+
+There are other approaches to modeling transactions in a stream processing application. This includes promoting events through a chain of topics based on event state. Following this approach, our tenant events might be submitted to the topic tenant-pending. There, they are picked up by an event processor that sets up the integration for the third-party payment provider and submits events to either the tenant-created or the tenant-failed topic.
+
+There are many different ways to build systems around Apache Kafka and this article presented just one. If you would like, you can download the Confluent Platform to get started with the leading distribution of Apache Kafka.
+
+My thanks go to Thomas Bayer who provided the initial architectural sketch, to the reviewers, Stefan Seifert and Ben Stopford, and to Victoria Yu for copyediting.
